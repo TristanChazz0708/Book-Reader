@@ -141,7 +141,7 @@
                 pageFlipInstance = new St.PageFlip(flipbookContainer, {
                     width: 450, 
                     height: 600, 
-                    size: "fit",
+                    size: "stretch",
                     minWidth: 300,
                     maxWidth: 800,
                     minHeight: 400,
