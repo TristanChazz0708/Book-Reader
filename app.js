@@ -1,6 +1,6 @@
-// app.js - Core Engine Logic with Fabric.js Integration
+// app.js - Core Engine Logic with Bulletproof Loading
 
-// Ensure PDF.js worker is configured
+// 1. Configure PDF.js Worker
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
 
 const fileInput = document.getElementById('file-upload');
@@ -8,40 +8,37 @@ const flipbookContainer = document.getElementById('flipbook');
 const emptyState = document.getElementById('empty-state');
 
 let pageFlipInstance = null;
-let fabricCanvases = []; // Store our drawing layers
+let fabricCanvases = []; 
 
 // --- TOOL STATE MANAGEMENT ---
-// We grab the tool buttons and set up a listener to change modes
 const toolBtns = document.querySelectorAll('#tool-group .tool-btn[data-tool]');
 let currentTool = 'select';
 
 toolBtns.forEach(btn => {
     btn.addEventListener('click', (e) => {
+        toolBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
         currentTool = btn.dataset.tool;
         updateToolInteractions();
     });
 });
 
 function updateToolInteractions() {
-    if (!pageFlipInstance) return;
+    if (fabricCanvases.length === 0) return;
 
     if (currentTool === 'select') {
-        // READING MODE: Enable page flipping, disable drawing
-        // Note: StPageFlip doesn't have a direct "disable" method in the free version,
-        // so we manage it by changing CSS pointer-events on the fabric layers.
+        // READING MODE
         setFabricPointerEvents('none');
         setFabricDrawingMode(false);
     } else {
-        // EDITING MODE: Disable page flipping, enable drawing
+        // EDITING MODE
         setFabricPointerEvents('auto');
         
         if (currentTool === 'pen') {
-            setFabricDrawingMode(true, 'black', 2);
+            setFabricDrawingMode(true, '#ef4444', 3); // Red pen for visibility
         } else if (currentTool === 'highlight') {
-            setFabricDrawingMode(true, 'rgba(255, 255, 0, 0.4)', 15);
+            setFabricDrawingMode(true, 'rgba(250, 204, 21, 0.4)', 20); // Yellow highlighter
         } else if (currentTool === 'eraser') {
-            // A true eraser is complex in Fabric, so we disable drawing 
-            // and let the user click objects to delete them for now.
             setFabricDrawingMode(false);
             enableEraserClicks();
         }
@@ -49,7 +46,6 @@ function updateToolInteractions() {
 }
 
 function setFabricPointerEvents(state) {
-    // When pointer-events are 'none', clicks pass through to the page-flip engine beneath
     const canvasContainers = document.querySelectorAll('.canvas-container');
     canvasContainers.forEach(container => {
         container.style.pointerEvents = state;
@@ -63,7 +59,6 @@ function setFabricDrawingMode(isDrawing, color = 'black', width = 2) {
             canvas.freeDrawingBrush.color = color;
             canvas.freeDrawingBrush.width = width;
         }
-        // Remove object selection listeners used by the eraser
         canvas.off('mouse:down'); 
     });
 }
@@ -79,100 +74,126 @@ function enableEraserClicks() {
 }
 
 // --- PDF UPLOAD AND RENDERING ---
+
+// Helper function to show status on screen
+function updateStatus(message, isError = false) {
+    if (isError) {
+        flipbookContainer.innerHTML = `<div class="bg-red-900/50 text-red-400 p-6 rounded border border-red-700 max-w-md text-center"><i class="fa-solid fa-triangle-exclamation text-3xl mb-2"></i><br/>${message}</div>`;
+        console.error(message);
+    } else {
+        flipbookContainer.innerHTML = `<div class="text-sky-400 animate-pulse flex flex-col items-center"><i class="fa-solid fa-spinner fa-spin text-3xl mb-2"></i>${message}</div>`;
+        console.log(message);
+    }
+}
+
 fileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
 
+    // Reset UI
     emptyState.classList.add('hidden');
     flipbookContainer.classList.remove('hidden');
-    flipbookContainer.innerHTML = '<div class="text-white">Loading document...</div>';
     
-    // Clear previous canvases if a new book is loaded
+    // Destroy previous book if one exists
+    if (pageFlipInstance) {
+        pageFlipInstance.destroy();
+        pageFlipInstance = null;
+    }
     fabricCanvases = []; 
+    flipbookContainer.innerHTML = ''; 
+
+    updateStatus(`Reading file: ${file.name}...`);
 
     const fileReader = new FileReader();
     
     fileReader.onload = async function() {
+        updateStatus("File read successfully. Decoding PDF...");
         const typedarray = new Uint8Array(this.result);
 
         try {
-            const pdfDoc = await pdfjsLib.getDocument(typedarray).promise;
-            flipbookContainer.innerHTML = ''; 
+            // FIX: Ensure data is wrapped in an object for PDF.js
+            const loadingTask = pdfjsLib.getDocument({ data: typedarray });
+            const pdfDoc = await loadingTask.promise;
+            
+            updateStatus(`PDF decoded. Contains ${pdfDoc.numPages} pages. Rendering...`);
 
-            pageFlipInstance = new St.PageFlip(flipbookContainer, {
-                width: 450, 
-                height: 650, 
-                size: "stretch",
-                minWidth: 315,
-                maxWidth: 1000,
-                minHeight: 420,
-                maxHeight: 1350,
-                showCover: true,
-                maxShadowOpacity: 0.5,
-            });
+            // Clear container before injecting pages
+            flipbookContainer.innerHTML = '';
 
-            const pages = [];
-            const pagesToRender = Math.min(pdfDoc.numPages, 10); 
+            const pagesToRender = Math.min(pdfDoc.numPages, 10); // Limit to 10 for testing
             
             for (let i = 1; i <= pagesToRender; i++) {
                 const page = await pdfDoc.getPage(i);
                 
-                // 1. Create a container for the page
+                // Create DOM elements
                 const pageDiv = document.createElement('div');
-                pageDiv.className = 'page relative'; // relative is important for layering
+                pageDiv.className = 'page';
+                pageDiv.style.position = 'relative'; 
+                pageDiv.style.backgroundColor = '#ffffff';
 
-                // 2. Create the background canvas (PDF.js rendering)
+                // Background Canvas (PDF render)
                 const bgCanvas = document.createElement('canvas');
                 const bgContext = bgCanvas.getContext('2d');
                 
                 const viewport = page.getViewport({ scale: 1.5 });
                 bgCanvas.width = viewport.width;
                 bgCanvas.height = viewport.height;
-                bgCanvas.style.width = '100%'; // Ensure it fills the pageDiv
+                bgCanvas.style.width = '100%'; 
                 bgCanvas.style.height = '100%';
 
                 await page.render({ canvasContext: bgContext, viewport: viewport }).promise;
                 pageDiv.appendChild(bgCanvas);
 
-                // 3. Create the foreground canvas (Fabric.js drawing layer)
+                // Foreground Canvas (Fabric.js layer)
                 const fgCanvas = document.createElement('canvas');
-                // ID must be unique for Fabric to hook into it
                 fgCanvas.id = `fabric-page-${i}`; 
-                // We overlay it exactly on top of the background canvas
                 fgCanvas.style.position = 'absolute'; 
                 fgCanvas.style.top = '0';
                 fgCanvas.style.left = '0';
                 pageDiv.appendChild(fgCanvas);
 
-                pages.push(pageDiv);
+                // FIX: Append directly to DOM first before PageFlip takes over
+                flipbookContainer.appendChild(pageDiv);
             }
 
-            pageFlipInstance.loadFromHTML(pages);
+            // Initialize PageFlip using the elements now in the DOM
+            pageFlipInstance = new St.PageFlip(flipbookContainer, {
+                width: 450, 
+                height: 600, 
+                size: "fit", // Changed from stretch to fit to preserve book aspect ratio
+                minWidth: 300,
+                maxWidth: 800,
+                minHeight: 400,
+                maxHeight: 1000,
+                showCover: true,
+                maxShadowOpacity: 0.3,
+            });
 
-            // 4. Initialize Fabric on all foreground canvases AFTER they are added to the DOM
-            setTimeout(() => {
-                const domPages = document.querySelectorAll('.page');
-                domPages.forEach((pageDiv, index) => {
-                    const canvasElement = pageDiv.querySelector(`canvas[id^="fabric-page-"]`);
-                    if (canvasElement) {
-                        const fCanvas = new fabric.Canvas(canvasElement.id, {
-                            width: pageDiv.clientWidth,
-                            height: pageDiv.clientHeight,
-                            isDrawingMode: false // Start in reading mode
-                        });
-                        fabricCanvases.push(fCanvas);
-                    }
-                });
-                
-                // Set initial state to match the default selected tool
-                updateToolInteractions();
-            }, 100); // Small delay to let StPageFlip format the DOM
+            // Grab the newly appended pages and load them into the engine
+            const domPages = document.querySelectorAll('#flipbook .page');
+            pageFlipInstance.loadFromHTML(domPages);
+
+            // Initialize Fabric Canvases
+            domPages.forEach((pageDiv, index) => {
+                const canvasElement = pageDiv.querySelector(`canvas[id^="fabric-page-"]`);
+                if (canvasElement) {
+                    const fCanvas = new fabric.Canvas(canvasElement.id, {
+                        width: pageDiv.clientWidth,
+                        height: pageDiv.clientHeight,
+                        isDrawingMode: false
+                    });
+                    fabricCanvases.push(fCanvas);
+                }
+            });
+
+            // Ensure tools are set to 'Select' by default
+            updateToolInteractions();
 
         } catch (error) {
-            console.error("Error rendering PDF:", error);
-            flipbookContainer.innerHTML = '<div class="text-red-500">Error loading PDF. Check console.</div>';
+            updateStatus(`Failed to load PDF: ${error.message}`, true);
         }
     };
 
+    // Trigger the file read
     fileReader.readAsArrayBuffer(file);
 });
